@@ -1,0 +1,484 @@
+---
+title: "ML_project"
+author: "Oz Solomon"
+date: "Oct 3, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<H><b>Loading and cleaning the data</b></H><br>
+############################################<br>
+```{r}
+
+library(caret);
+library(rpart);
+library(pheatmap)
+library(ggplot2)
+#install.packages("corrplot")
+library(corrplot)
+library(pROC) # for AUC calculations
+library(PRROC) # for Precision-Recall curve calculations
+
+set<-read.csv("/home/oz/Downloads/pml-training.csv",header=T,row.names = 1);
+
+
+## Counts how much NAs you have in a column
+count_NA<-function(v){
+  k=0;
+  for(i in 1:length(v)){
+    if(is.na(v[i])){
+      k=k+1;
+    }
+  }
+  
+  return(k);
+}
+
+
+### Find how much NAs you have ##
+
+val<-apply(set,2, count_NA);
+
+len<-nrow(set)
+
+## Filtering-out the variables with too much NAs (>90% NAs) from downstream analysis #
+col_to_ignore<-names(val[val>len*0.9])
+
+set2<-set[,!(colnames(set)%in%col_to_ignore)]
+
+set3<-set2
+
+summary(set3)
+
+
+```
+
+################################<br>
+<H>Examine variables with too few levels</H><br>
+- variables with too much empty values. <br>
+- Covert them to NA and filter-out columns with >90% NAs (as in previous step).<br>
+###############################<br>
+
+
+```{r}
+vars_to_examine<-c()
+k=1;
+
+for(i in 1:ncol(set3)){
+  len_s<-length(unique(set3[,i]))
+  if(len_s<3){
+    vars_to_examine[k]<-colnames(set3)[i]
+    k=k+1;
+  }
+}
+
+print(vars_to_examine)
+## expet "new_window" all the vars in vars to examine have errors and empty values -> so we remove them.
+
+
+
+vars_to_ignore<-vars_to_examine[(vars_to_examine)!="new_window"]
+
+for(j in 1:ncol(set3)){
+  for(i in 1:nrow(set3)){
+    if(set3[i,j]==""){
+      set3[i,j]=NA;
+    }
+  }
+}
+
+len<-nrow(set3)
+val<-apply(set3,2, count_NA);
+col_to_ignore<-names(val[val>len*0.9])
+set3<-set3[,!(colnames(set3)%in%col_to_ignore)]
+
+summary(set3)
+str(set3);
+#View(set3)
+
+```
+
+```{r}
+
+set3$new_window<-factor(set3$new_window)
+#set3$cvtd_timestamp<-factor(as.character(set3$cvtd_timestamp))
+
+set3$cvtd_timestamp<-as.Date(set3$cvtd_timestamp)
+
+# 
+# table(set3[,"raw_timestamp_part_1"])
+# table(set3[,"raw_timestamp_part_2"])
+# table(set3[,"new_window"])
+# table(set3[,"num_window"])
+# table(set3[,"cvtd_timestamp"])
+# 
+# val<-apply(set3,2,count_NA);
+```
+Examine for near-zero-variance<br>
+################################<br>
+
+```{r}
+nzv <- nearZeroVar(set3, saveMetrics = TRUE)
+
+if(length(nzv[nzv$zeroVar==T,1]>0)){
+  cat("There is varibable with near-zero-varivance, which is\n",rownames(nzv[nzv$zeroVar==T,]),"\n");
+}else{
+  cat("There is no such variable with near zero variance. Great!\n");
+  
+}
+
+
+
+
+```
+
+*After filtering, there is no existed variable with zero variance.<br> 
+
+
+<h><b>Explore how the data looks</b></h><br>
+############################################<br>
+1. Does the `user_name` explain the `classe` ? - Plot the precent in each 'classe' for differnt users (100% is for each person) <br>
+
+2. Does the date of the testing explain `classe` ? - plot as heatmap the precent of `classe` in each date (100% is for single date)  <br>
+
+```{r}
+library(pheatmap)
+
+pt<-prop.table(table(set3$user_name,set3$classe),1)*100
+pheatmap(pt)
+
+pt<-prop.table(table(set3$cvtd_timestamp,set3$classe),1)*100
+pheatmap(pt)
+
+
+```
+<H><p style="color:red">*Notice</p></h><br>
+Very few pepole (n=6) were tested in this study, in relatively short period of time (few days).<br>
+Therefore, if we will include the user_name or other variable related to the timestamp in the model, the model will "memorize" the name of that person (or the time did the tests) and will asign the classification accordingly.<br>As a result, I will filter-out these variables (user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp) from down-stream analysis.<br>
+######################################<br>
+
+3. Use featureplot as density in order to see how each variable explain the `classe`.<br>
+
+############################################<br>
+
+```{r}
+
+get_numeric<-function(a,mat){
+  v<-NA;
+  if(as.character(a)%in%colnames(mat)){
+    if(is.numeric(mat[,as.character(a)])){
+      v<-as.character(a);
+    }else{
+      v<-NA;
+    }
+  }
+  return(v);
+}
+
+vars<-names(na.omit(sapply(colnames(set3[,colnames(set3)!="classe"]),get_numeric,set3)))
+
+
+featurePlot(x = set3[,vars], 
+            y = factor(set3$classe),
+            plot = "density", 
+            ## Pass in options to xyplot() to 
+            ## make it prettier
+            scales = list(x = list(relation="free"), 
+                          y = list(relation="free")), 
+            adjust = 1.5, 
+            pch = "|", 
+            layout = c(4, 1), 
+            auto.key = list(columns = 3))
+
+
+# featurePlot(x = set3[,vars], 
+#             y = factor(set3$classe), 
+#             plot = "box", 
+#             ## Pass in options to bwplot() 
+#             scales = list(y = list(relation="free"),
+#                           x = list(rot = 90)),  
+#             layout = c(4,1 ), 
+#             auto.key = list(columns = 2))
+
+
+
+
+
+```
+
+<H><b>Create train/test partition</b></H><br>
+
+```{r}
+
+library(caret)
+set.seed(1234);
+
+## filtering out the variables that are related to the name of the tested person or the time he did the tests##
+
+set3<-set3[,!(colnames(set3)%in%c("user_name","raw_timestamp_part_1","raw_timestamp_part_2","cvtd_timestamp"))]
+
+inTrain<-createDataPartition(set3$classe,p=0.6,list=F)
+
+
+training<-set3[inTrain,]
+testing<-set3[!(rownames(set3)%in%inTrain),];
+
+
+###########################
+#inTrain2<-createDataPartition(training0$classe,p=0.6,list=F)
+#training<-training0[inTrain2,]
+#testing<-training0[-inTrain2,]
+####################################
+#users<-unique(training$user_name)
+
+count_NA<-function(v){
+  k=0;
+  for(i in 1:length(v)){
+    if(is.na(v[i])){
+      k=k+1;
+    }
+  }
+  
+  return(k);
+}
+
+val<-apply(training,2, count_NA);
+# 
+len<-nrow(training)
+col_to_ignore<-names(val[val>len*0.9])
+
+training2<-training[,!(colnames(training)%in%col_to_ignore)]
+testing2<-testing[,!(colnames(testing)%in%col_to_ignore)]
+
+
+
+ctrl2 = trainControl(method = "repeatedcv",                                       repeats = 5,classProbs = TRUE, savePredictions = TRUE) ##, summaryFunction = twoClassSummary
+
+
+colnames(training2)
+
+
+training2$classe<-factor(training2$classe);
+testing2$classe<-factor(testing2$classe);
+
+
+library(doParallel)
+cl <- makePSOCKcluster(6)
+registerDoParallel(cl)
+
+
+```
+
+<h>Prints variableImportace using randomForset model</H><br>
+
+```{r}
+library(randomForest)
+model<-randomForest(x=training2[,colnames(training2)!="classe"],y=training2$classe,mtry=20,ntree=50)
+
+
+(vv<-varImp(model))
+pred<-predict(model,newdata=testing2)
+
+
+```
+* It seems that the highest importance has for 'num_window' and 'roll_belt' <br>
+
+
+<H>Testing confusion matrix, with randomForset model</H><br>
+
+
+```{r}
+
+
+(t<-table(pred,testing2$classe))
+train_acc<-mean(model$predicted==training2$classe)
+test_acc<-mean(pred==testing2$classe)
+cat("Testing accuracy:\t",test_acc,"\n");
+cat("Training accuracy:\t",train_acc,"\n");
+
+#plot(vv)
+
+
+
+```
+
+<H>Plot densities of randomForset prediction using trainging and testing data</H><br>
+##########################<br>
+```{r}
+pred_rf0<-predict(model,newdata=training2)
+pred_rf1<-predict(model,newdata=testing2)
+
+df1<-data.frame(p_rf=pred_rf1,classe=testing2$classe);
+df0<-data.frame(p_rf=pred_rf0,classe=training2$classe);
+
+ggplot(df0, aes(x=p_rf, color=classe)) + geom_density()+ggtitle("Double-plot training")
+ggplot(df1, aes(x=p_rf, color=classe)) + geom_density()+ggtitle("Double-plot testing")
+
+```
+
+* Of course, prediction based on training data is exgrading.<BR>
+Using testing data is the realistic calculation.<br>
+#####################################################<br>
+
+<H>Fit RandomForset, GBM and SVM for classification</h><br>
+########################################################<br>
+
+```{r}
+#fit<-train((classe) ~ . ,data=head(training2,100),method="rf")
+library("gbm")
+library("randomForest")
+library("e1071")
+fit_svm<-svm(classe ~. ,data=training2,kernel="radial")
+
+fit_rf<-randomForest(classe ~. ,data=training2,mtry=20,ntree=1000)
+
+fit_gbm<-gbm(classe ~. ,data=training2)
+
+summary(fit_gbm)
+
+
+```
+* Using GBM the 3 most influancial variable are: roll_belt, pitch_forearm and num_window.
+
+<H>Evaluate preformance based on testing2 data</H><br>
+
+```{r}
+
+
+pred_rf<-predict(fit_rf,newdata=testing2);
+pred_svm<-predict(fit_svm,newdata=testing2)
+pred_gbm0<-predict(fit_gbm,newdata=testing2,type="response")
+pred_gbm <- as.factor(colnames(pred_gbm0)[apply(pred_gbm0, 1, which.max)])
+
+
+```
+<H>Print preformace values using confusionMatrix</h><br>
+1. RandomForset<br>
+2. SVM<br>
+3. GBM<br>
+######################################<br>
+
+```{r}
+confusionMatrix(pred_rf,testing2$classe)
+confusionMatrix(pred_svm,testing2$classe)
+confusionMatrix(pred_gbm,testing2$classe)
+
+```
+
+<H><b>Use majority vote classification</b></h><br>
+
+In order to better generlize even for examples that were not included in the training set (as the examples were taken from very few pepole in this study), I will use majority vote between 3 methods: randomForset, GBM, and SVM in order to predict in the next step an unseen example.<br>
+########################################<br>
+```{r}
+
+pred_final<-data.frame(cbind(as.character(pred_rf),as.character(pred_gbm),as.character(pred_svm)),check.names = F)
+
+
+get_majority_vote<-function(vec){
+  v<-c(0,0,0,0,0);
+  for(i in 1:length(vec)){
+    if(vec[i]=="A"){
+      v[1]=v[1]+1;
+    }
+    if(vec[i]=="B"){
+      v[2]=v[2]+1;
+    }
+    if(vec[i]=="C"){
+      v[3]=v[3]+1;
+    }
+    if(vec[i]=="D"){
+      v[4]=v[4]+1;
+    }
+    if(vec[i]=="E"){
+      v[5]=v[5]+1;
+    }
+  }
+  
+  max_m<-max(v);
+  
+  if(v[1]==max_m){
+    return("A");
+  }
+  
+  if(v[2]==max_m){
+    return("B");
+  }
+  if(v[3]==max_m){
+    return("C");
+  }
+  if(v[4]==max_m){
+    return("D");
+  }
+  if(v[5]==max_m){
+    return("E");
+  }
+  
+}
+
+pred_final$majority<-apply(pred_final[,1:3],1,get_majority_vote)
+
+##
+ACC_testing<-c()
+#
+ACC_testing[1]<-mean(testing2$classe==pred_final$majority)
+ACC_testing[2]<-mean(testing2$classe==pred_rf)
+ACC_testing[3]<-mean(testing2$classe==pred_svm)
+ACC_testing[4]<-mean(testing2$classe==pred_gbm)
+
+
+names(ACC_testing)<-c("Majority_Vote","RF","SVM","GBM");
+
+A_testing <- data.frame(
+  name= names(ACC_testing),  
+  value=ACC_testing
+  )
+
+
+
+```
+
+########################################################<br>
+<H>Plot the predicted accuracy useing the majority voting vs. RF/GBM/SVM </H><br>
+######################################<br>
+```{r}
+
+ggplot(A_testing, aes(x=name, y=value)) + 
+  geom_bar(stat = "identity")
+
+#####################################################
+
+```
+
+<H><b> Predict an unseen example </b></H><br>
+###########################################<br>
+
+```{r}
+
+valid<-read.csv("/home/oz/Downloads/pml-testing.csv",header=T,row.names = 1)
+# valid$classe<-factor("A",levels=c("A","B","C","D","E"))
+# valid<-valid[,colnames(training2)]
+valid$new_window<-factor(valid$new_window,levels=c("yes","no"))
+pred2<-predict(fit_rf,newdata=valid)
+pred3_0<-predict(fit_gbm,newdata=valid,type="response")
+pred3<-as.factor(colnames(pred3_0)[apply(pred3_0, 1, which.max)])
+
+
+var_s<-colnames(testing2[,colnames(testing2)!="classe"])
+v<-valid[,var_s]
+pred4<-predict(fit_svm,newdata=v)
+
+
+valid_pred<-data.frame(cbind(as.character(pred2),as.character(pred3),as.character(pred4)),check.names = F)
+valid_pred$majority<-apply(valid_pred[,1:3],1,get_majority_vote);
+colnames(valid_pred)<-c("RF","GBM","SVM","majority")
+table(valid_pred$majority)
+
+#####################################
+stopCluster(cl)
+
+
+sessionInfo()
+```
